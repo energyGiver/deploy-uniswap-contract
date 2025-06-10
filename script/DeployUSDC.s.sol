@@ -6,9 +6,10 @@ import "../src/USDC.sol";
 
 contract DeployUSDC is Script {
     function run() external {
-        vm.startBroadcast();
+        uint256 pk = vm.envUint("PRIVATE_KEY");
+        vm.startBroadcast(pk);
         USDC usdc = new USDC(1000000 * 10 ** 18);
         console.log("USDC deployed at:", address(usdc));
         vm.stopBroadcast();
     }
-} 
+}

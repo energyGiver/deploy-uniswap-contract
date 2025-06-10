@@ -7,4 +7,4 @@ contract Radius is ERC20 {
     constructor(uint256 initialSupply) ERC20("Radius", "RDS") {
         _mint(msg.sender, initialSupply);
     }
-} 
+}

@@ -7,4 +7,4 @@ contract WETH is ERC20 {
     constructor(uint256 initialSupply) ERC20("Wrapped Ether", "WETH") {
         _mint(msg.sender, initialSupply);
     }
-} 
+}

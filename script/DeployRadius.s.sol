@@ -6,9 +6,10 @@ import "../src/Radius.sol";
 
 contract DeployRadius is Script {
     function run() external {
-        vm.startBroadcast();
+        uint256 pk = vm.envUint("PRIVATE_KEY");
+        vm.startBroadcast(pk);
         Radius radius = new Radius(1000000 * 10 ** 18);
         console.log("Radius deployed at:", address(radius));
         vm.stopBroadcast();
     }
-} 
+}
