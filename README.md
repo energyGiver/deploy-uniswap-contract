@@ -114,3 +114,9 @@ $ forge --help
 $ anvil --help
 $ cast --help
 ```
+
+
+@openzeppelin/=lib/openzeppelin-contracts/contracts/
+@uniswap/v3-core/=lib/v3-core/contracts/
+@uniswap/v3-periphery/=lib/v3-periphery/contracts/
+forge-std/=lib/forge-std/src/

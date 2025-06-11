@@ -1,87 +1,93 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.20;
+pragma solidity ^0.8.24;
 
-import {INonfungiblePositionManager} from "@uniswap/v3-periphery/contracts/interfaces/INonfungiblePositionManager.sol";
+// ── OpenZeppelin v5.3.0 ──────────────────────────────────────────
 import {IERC20} from "lib/openzeppelin-contracts/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "lib/openzeppelin-contracts/contracts/token/ERC20/utils/SafeERC20.sol";
-import {TickMath} from "lib/v3-core/contracts/libraries/TickMath.sol";
-import {SqrtPriceMath} from "lib/v3-core/contracts/libraries/SqrtPriceMath.sol";
+
+// ── Uniswap v3 core + periphery ─────────────────────────────────
+import {IUniswapV3Factory} from "@uniswap/v3-core/contracts/interfaces/IUniswapV3Factory.sol";
+import {IUniswapV3Pool} from "@uniswap/v3-core/contracts/interfaces/IUniswapV3Pool.sol";
+import {TickMath} from "@uniswap/v3-core/contracts/libraries/TickMath.sol";
+import {LiquidityAmounts} from "@uniswap/v3-periphery/contracts/libraries/LiquidityAmounts.sol";
 
 contract UniswapV3Liquidity {
     using SafeERC20 for IERC20;
 
-    // --- 상수 선언 ---
-    // NonfungiblePositionManager 주소 (V3 기준이며, 롤업 환경에 맞게 수정 필요)
-    address public constant POSITION_MANAGER =
-        0xC36442b4a4522E871399CD717aBDD847Ab11FE88;
-    // WETH 주소
-    address public constant WETH = 0x529EB62Ae7B9791F34b7429E9c20313CD48927F4;
+    address public immutable factory;
 
-    // --- 이벤트 ---
-    event PoolCreated(
-        address indexed token0,
-        address indexed token1,
-        uint24 indexed fee,
-        address pool
-    );
-    event LiquidityAdded(address indexed pool, uint256 liquidity);
+    event PoolCreated(address pool);
+    event LiquidityAdded(address pool, uint128 liquidity);
 
-    // --- 함수 ---
+    constructor(address _factory) {
+        factory = _factory;
+    }
 
-    /**
-     * @notice 두 토큰과 수수료 등급을 받아 유니스왑 V3 풀을 생성하고 초기 유동성을 공급합니다.
-     * @param _tokenA 주소: 첫 번째 토큰의 주소
-     * @param _tokenB 주소: 두 번째 토큰의 주소
-     * @param _fee 수수료 등급 (예: 3000 for 0.3%)
-     * @param _amountA 원하는 첫 번째 토큰의 유동성 공급량
-     * @param _amountB 원하는 두 번째 토큰의 유동성 공급량
-     * @param _sqrtPriceX96 초기 가격 설정을 위한 SqrtPriceX96 값
-     */
+    /// @notice 풀이 없으면 만들고, 전구간(tick MIN~MAX)에 유동성을 넣는다
     function createAndAddLiquidity(
-        address _tokenA,
-        address _tokenB,
-        uint24 _fee,
-        uint256 _amountA,
-        uint256 _amountB,
-        uint160 _sqrtPriceX96
+        address tokenA,
+        address tokenB,
+        uint24 fee,
+        uint256 amountA,
+        uint256 amountB,
+        uint160 sqrtPriceX96
     ) external {
-        // 토큰 전송 권한 위임 (Approve)
-        IERC20(_tokenA).safeApprove(POSITION_MANAGER, _amountA);
-        IERC20(_tokenB).safeApprove(POSITION_MANAGER, _amountB);
+        // ── 토큰 정렬 ──────────────────────────────────────────────
+        (address token0, address token1) = tokenA < tokenB
+            ? (tokenA, tokenB)
+            : (tokenB, tokenA);
+        (uint256 amount0, uint256 amount1) = tokenA < tokenB
+            ? (amountA, amountB)
+            : (amountB, amountA);
 
-        // NonfungiblePositionManager 인터페이스
-        INonfungiblePositionManager positionManager = INonfungiblePositionManager(
-                POSITION_MANAGER
-            );
+        // ── 토큰 보관 ──────────────────────────────────────────────
+        IERC20(token0).safeTransferFrom(msg.sender, address(this), amount0);
+        IERC20(token1).safeTransferFrom(msg.sender, address(this), amount1);
 
-        // 풀 생성 및 초기화
-        address pool = positionManager.createAndInitializePoolIfNecessary(
-            _tokenA,
-            _tokenB,
-            _fee,
-            _sqrtPriceX96
+        // ── 풀 생성 & 초기화 ───────────────────────────────────────
+        IUniswapV3Factory f = IUniswapV3Factory(factory);
+        address pool = f.getPool(token0, token1, fee);
+        if (pool == address(0)) {
+            pool = f.createPool(token0, token1, fee);
+            IUniswapV3Pool(pool).initialize(sqrtPriceX96);
+            emit PoolCreated(pool);
+        }
+
+        // ── 유동성 계산 ───────────────────────────────────────────
+        int24 tickLower = TickMath.MIN_TICK;
+        int24 tickUpper = TickMath.MAX_TICK;
+
+        uint128 liquidity = LiquidityAmounts.getLiquidityForAmounts(
+            sqrtPriceX96,
+            TickMath.getSqrtRatioAtTick(tickLower),
+            TickMath.getSqrtRatioAtTick(tickUpper),
+            amount0,
+            amount1
         );
 
-        emit PoolCreated(_tokenA, _tokenB, _fee, pool);
-
-        // 유동성 공급 (Mint)
-        INonfungiblePositionManager.MintParams
-            memory params = INonfungiblePositionManager.MintParams({
-                token0: _tokenA,
-                token1: _tokenB,
-                fee: _fee,
-                tickLower: TickMath.MIN_TICK,
-                tickUpper: TickMath.MAX_TICK,
-                amount0Desired: _amountA,
-                amount1Desired: _amountB,
-                amount0Min: 0,
-                amount1Min: 0,
-                recipient: msg.sender,
-                deadline: block.timestamp
-            });
-
-        (, , uint256 liquidity, , ) = positionManager.mint(params);
+        // ── mint (풀에서 callback 호출) ───────────────────────────
+        IUniswapV3Pool(pool).mint(
+            msg.sender,
+            tickLower,
+            tickUpper,
+            liquidity,
+            abi.encode(token0, token1) // callback data
+        );
 
         emit LiquidityAdded(pool, liquidity);
+    }
+
+    /// @dev 풀에서 호출. 이 컨트랙트가 풀에 토큰을 전송해 줘야 한다.
+    function uniswapV3MintCallback(
+        uint256 amount0Owed,
+        uint256 amount1Owed,
+        bytes calldata data
+    ) external {
+        (address token0, address token1) = abi.decode(data, (address, address));
+
+        if (amount0Owed > 0)
+            IERC20(token0).safeTransfer(msg.sender, amount0Owed);
+        if (amount1Owed > 0)
+            IERC20(token1).safeTransfer(msg.sender, amount1Owed);
     }
 }
