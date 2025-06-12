@@ -15,7 +15,6 @@ contract UniswapV3Liquidity {
     using SafeERC20 for IERC20;
 
     address public immutable factory;
-
     event PoolCreated(address pool);
     event LiquidityAdded(address pool, uint128 liquidity);
 
@@ -23,28 +22,40 @@ contract UniswapV3Liquidity {
         factory = _factory;
     }
 
-    /// @notice 풀이 없으면 만들고, 전구간(tick MIN~MAX)에 유동성을 넣는다
+    function _roundToSpacing(
+        int24 tick,
+        int24 spacing,
+        bool roundDown
+    ) private pure returns (int24) {
+        int24 rounded = (tick / spacing) * spacing; // Solidity truncates toward 0
+        if (roundDown) {
+            if (rounded > tick) rounded -= spacing; // 음수일 땐 더 작은 쪽
+        } else {
+            if (rounded < tick) rounded += spacing;
+        }
+        return rounded;
+    }
+
     function createAndAddLiquidity(
         address tokenA,
         address tokenB,
         uint24 fee,
-        uint256 amountA,
+        uint256 amountA, // **wei 단위**
         uint256 amountB,
         uint160 sqrtPriceX96
     ) external {
-        // ── 토큰 정렬 ──────────────────────────────────────────────
+        // ── 1. token 정렬 ────────────────────────────────
         (address token0, address token1) = tokenA < tokenB
             ? (tokenA, tokenB)
             : (tokenB, tokenA);
-        (uint256 amount0, uint256 amount1) = tokenA < tokenB
+        (uint256 amt0, uint256 amt1) = tokenA < tokenB
             ? (amountA, amountB)
             : (amountB, amountA);
 
-        // ── 토큰 보관 ──────────────────────────────────────────────
-        IERC20(token0).safeTransferFrom(msg.sender, address(this), amount0);
-        IERC20(token1).safeTransferFrom(msg.sender, address(this), amount1);
+        IERC20(token0).safeTransferFrom(msg.sender, address(this), amt0);
+        IERC20(token1).safeTransferFrom(msg.sender, address(this), amt1);
 
-        // ── 풀 생성 & 초기화 ───────────────────────────────────────
+        // ── 2. 풀 없으면 생성 + 초기화 ────────────────────
         IUniswapV3Factory f = IUniswapV3Factory(factory);
         address pool = f.getPool(token0, token1, fee);
         if (pool == address(0)) {
@@ -53,38 +64,37 @@ contract UniswapV3Liquidity {
             emit PoolCreated(pool);
         }
 
-        // ── 유동성 계산 ───────────────────────────────────────────
-        int24 tickLower = TickMath.MIN_TICK;
-        int24 tickUpper = TickMath.MAX_TICK;
+        // ── 3. tick 범위 spacing 에 맞추기 ────────────────
+        int24 spacing = IUniswapV3Pool(pool).tickSpacing(); // int24!
+        int24 tickLower = _roundToSpacing(TickMath.MIN_TICK, spacing, false); // -887 220
+        int24 tickUpper = _roundToSpacing(TickMath.MAX_TICK, spacing, true); //  887 220
 
-        uint128 liquidity = LiquidityAmounts.getLiquidityForAmounts(
+        // ── 4. 유동성 계산 & mint ────────────────────────
+        uint128 liq = LiquidityAmounts.getLiquidityForAmounts(
             sqrtPriceX96,
             TickMath.getSqrtRatioAtTick(tickLower),
             TickMath.getSqrtRatioAtTick(tickUpper),
-            amount0,
-            amount1
+            amt0,
+            amt1
         );
 
-        // ── mint (풀에서 callback 호출) ───────────────────────────
         IUniswapV3Pool(pool).mint(
             msg.sender,
             tickLower,
             tickUpper,
-            liquidity,
-            abi.encode(token0, token1) // callback data
+            liq,
+            abi.encode(token0, token1)
         );
 
-        emit LiquidityAdded(pool, liquidity);
+        emit LiquidityAdded(pool, liq);
     }
 
-    /// @dev 풀에서 호출. 이 컨트랙트가 풀에 토큰을 전송해 줘야 한다.
     function uniswapV3MintCallback(
         uint256 amount0Owed,
         uint256 amount1Owed,
         bytes calldata data
     ) external {
         (address token0, address token1) = abi.decode(data, (address, address));
-
         if (amount0Owed > 0)
             IERC20(token0).safeTransfer(msg.sender, amount0Owed);
         if (amount1Owed > 0)
